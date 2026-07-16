@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-//go:embed public/*
-var publicFiles embed.FS
 var mux *http.ServeMux
 
 // 反向映射：把响应里的 free 名字换回 pro 名字，骗过下游统计工具
@@ -155,12 +153,6 @@ func (r *replacingReadCloser) Close() error {
 
 func init() {
 	mux = http.NewServeMux()
-
-	subFS, err := fs.Sub(publicFiles, "public")
-	if err != nil {
-		log.Fatalf("无法加载内嵌的静态文件系统: %v", err)
-	}
-	fsHandler := http.FileServer(http.FS(subFS))
 
 	opencodeURL, _ := url.Parse("https://opencode.ai")
 	proxy := httputil.NewSingleHostReverseProxy(opencodeURL)
@@ -320,7 +312,6 @@ func init() {
 		}
 		w.Write(buf.Bytes())
 	})
-	mux.Handle("/", fsHandler)
 }
 
 // Handler 是 Vercel Serverless Function 的入口
