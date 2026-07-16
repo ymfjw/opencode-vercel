@@ -2,12 +2,9 @@ package api
 
 import (
 	"bytes"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
