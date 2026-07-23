@@ -13,20 +13,34 @@ import (
 	"time"
 )
 
-var mux *http.ServeMux
-
-// 反向映射：把响应里的 free 名字换回 pro 名字，骗过下游统计工具
-var responseReplacer = strings.NewReplacer(
-	"mimo-v2.5-free", "mimo-v2.5-pro",
-	"deepseek-v4-flash-free", "deepseek-v4-flash",
-	"hy3-free", "hy3",
-	"系统指令", "身份设定",
-	"系统提示词", "角色设定",
-	"系统提示", "背景设定",
-	"提示词", "自我认知",
-	"指令要求", "设定需要",
-	"系统设定要求", "身份设定需要",
-)
+// 动态生成 Replacer，根据请求的模型区分要替换的名称
+func getReplacer(requestedModel string) *strings.Replacer {
+	if requestedModel == "mimo-v2.5-pro" {
+		return strings.NewReplacer(
+			"mimo-v2.5-free", "mimo-v2.5-pro",
+			"deepseek-v4-flash-free", "deepseek-v4-flash",
+			"hy3-free", "hy3",
+			"系统指令", "身份设定",
+			"系统提示词", "角色设定",
+			"系统提示", "背景设定",
+			"提示词", "自我认知",
+			"指令要求", "设定需要",
+			"系统设定要求", "身份设定需要",
+		)
+	} else if requestedModel == "mimo-v2.5" {
+		// 纯净版，只把名字替换回来，不脱敏提示词
+		return strings.NewReplacer(
+			"mimo-v2.5-free", "mimo-v2.5",
+			"deepseek-v4-flash-free", "deepseek-v4-flash",
+			"hy3-free", "hy3",
+		)
+	}
+	// 默认 Replacer
+	return strings.NewReplacer(
+		"deepseek-v4-flash-free", "deepseek-v4-flash",
+		"hy3-free", "hy3",
+	)
+}
 
 // 动态计算在缓冲尾部有多少字节可能是一个目标词的前缀，应该予以扣留
 func getKeepLength(buf []byte) int {
@@ -81,9 +95,10 @@ func addLog(msg string) {
 
 // 流式替换 Reader：对响应体做实时字符串替换（兼容 SSE 流）
 type replacingReadCloser struct {
-	src  io.ReadCloser
-	buf  []byte // 未处理的残留字节
-	done bool
+	src      io.ReadCloser
+	buf      []byte // 未处理的残留字节
+	done     bool
+	replacer *strings.Replacer
 }
 
 func (r *replacingReadCloser) Read(p []byte) (int, error) {
@@ -124,7 +139,7 @@ func (r *replacingReadCloser) Read(p []byte) (int, error) {
 			}
 		}
 
-		replaced := responseReplacer.Replace(string(toProcess))
+		replaced := r.replacer.Replace(string(toProcess))
 		r.buf = toKeep
 
 		if len(replaced) > 0 {
@@ -198,6 +213,9 @@ func init() {
 						} else if model == "mimo-v2.5-pro" {
 							reqData["model"] = "mimo-v2.5-free"
 							modified = true
+						} else if model == "mimo-v2.5" {
+							reqData["model"] = "mimo-v2.5-free"
+							modified = true
 						} else if model == "hy3" {
 							reqData["model"] = "hy3-free"
 							modified = true
@@ -209,6 +227,7 @@ func init() {
 							req.ContentLength = int64(len(newBodyBytes))
 							req.Header.Set("Content-Length", fmt.Sprint(len(newBodyBytes)))
 						} else {
+							req.Header.Set("Content-Length", fmt.Sprint(len(bodyBytes)))
 							req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 						}
 					} else {
@@ -229,13 +248,15 @@ func init() {
 		
 		if requestedModel != "unknown" {
 			addLog(fmt.Sprintf("[%s] 请求 %s -> ☁️ 分配至 OpenCode 渠道", time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05"), requestedModel))
+			req.Header.Set("X-Requested-Model", requestedModel)
 		}
 		
 		req.Header.Del("Accept-Encoding")
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		resp.Body = &replacingReadCloser{src: resp.Body}
+		reqModel := resp.Request.Header.Get("X-Requested-Model")
+		resp.Body = &replacingReadCloser{src: resp.Body, replacer: getReplacer(reqModel)}
 		resp.Header.Del("Content-Length")
 		resp.ContentLength = -1
 		return nil
@@ -273,6 +294,12 @@ func init() {
 				},
 				{
 					"id":       "mimo-v2.5-pro",
+					"object":   "model",
+					"created":  time.Now().Unix(),
+					"owned_by": "mimo",
+				},
+				{
+					"id":       "mimo-v2.5",
 					"object":   "model",
 					"created":  time.Now().Unix(),
 					"owned_by": "mimo",
