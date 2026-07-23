@@ -207,6 +207,7 @@ func init() {
 							newBodyBytes, _ := json.Marshal(reqData)
 							req.Body = io.NopCloser(bytes.NewBuffer(newBodyBytes))
 							req.ContentLength = int64(len(newBodyBytes))
+							req.Header.Set("Content-Length", fmt.Sprint(len(newBodyBytes)))
 						} else {
 							req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 						}
