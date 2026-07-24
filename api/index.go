@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var mux *http.ServeMux
+
 // 动态生成 Replacer，根据请求的模型区分要替换的名称
 func getReplacer(requestedModel string) *strings.Replacer {
 	if requestedModel == "mimo-v2.5-pro" {
