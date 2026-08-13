@@ -109,17 +109,33 @@ func addLog(msg string) {
 	}
 }
 
-// 流式替换 Reader：对响应体做实时字符串替换（兼容 SSE 流）
+// 流式替换 Reader：实现真正的无延迟 SSE 字节流实时替换与精确长度裁剪
 type replacingReadCloser struct {
 	src      io.ReadCloser
 	replacer *strings.Replacer
+	buf      []byte // 尚未输出完的替换余量缓冲区
 }
 
 func (r *replacingReadCloser) Read(p []byte) (int, error) {
-	n, err := r.src.Read(p)
+	// 1. 若缓冲区存有上次 Replace 溢出的字节，优先写出
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+
+	// 2. 独立缓冲区从上游读取
+	tmp := make([]byte, len(p))
+	n, err := r.src.Read(tmp)
 	if n > 0 && r.replacer != nil {
-		replaced := r.replacer.Replace(string(p[:n]))
-		copy(p, replaced)
+		replaced := r.replacer.Replace(string(tmp[:n]))
+		replacedBytes := []byte(replaced)
+		
+		copied := copy(p, replacedBytes)
+		if copied < len(replacedBytes) {
+			r.buf = replacedBytes[copied:]
+		}
+		return copied, err
 	}
 	return n, err
 }
