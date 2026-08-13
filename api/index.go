@@ -17,10 +17,13 @@ var mux *http.ServeMux
 
 // 动态生成 Replacer，根据请求的模型区分要替换的名称
 func getReplacer(requestedModel string) *strings.Replacer {
-	if requestedModel == "mimo-v2.5-pro" {
+	if requestedModel == "hy3" {
+		return strings.NewReplacer("hy3-free", "hy3")
+	} else if requestedModel == "mimo-v2.5-pro" {
 		return strings.NewReplacer(
 			"mimo-v2.5-free", "mimo-v2.5-pro",
 			"deepseek-v4-flash-free", "deepseek-v4-flash",
+			"hy3-free", "hy3",
 			"系统指令", "身份设定",
 			"系统提示词", "角色设定",
 			"系统提示", "背景设定",
@@ -29,42 +32,17 @@ func getReplacer(requestedModel string) *strings.Replacer {
 			"系统设定要求", "身份设定需要",
 		)
 	} else if requestedModel == "mimo-v2.5" {
-		// 纯净版，只把名字替换回来，不脱敏提示词
 		return strings.NewReplacer(
 			"mimo-v2.5-free", "mimo-v2.5",
 			"deepseek-v4-flash-free", "deepseek-v4-flash",
+			"hy3-free", "hy3",
 		)
 	}
-	// 默认 Replacer
 	return strings.NewReplacer(
+		"hy3-free", "hy3",
 		"deepseek-v4-flash-free", "deepseek-v4-flash",
+		"mimo-v2.5-free", "mimo-v2.5",
 	)
-}
-
-// 动态计算在缓冲尾部有多少字节可能是一个目标词的前缀，应该予以扣留
-func getKeepLength(buf []byte) int {
-	targets := []string{
-		"mimo-v2.5-free",
-		"deepseek-v4-flash-free",
-		"系统指令",
-		"系统提示词",
-		"系统提示",
-		"提示词",
-		"指令要求",
-		"系统设定要求",
-	}
-	maxKeep := 0
-	for _, target := range targets {
-		for i := 1; i < len(target); i++ {
-			prefix := target[:i]
-			if bytes.HasSuffix(buf, []byte(prefix)) {
-				if i > maxKeep {
-					maxKeep = i
-				}
-			}
-		}
-	}
-	return maxKeep
 }
 
 func getInjectionPrompt(model string) string {
@@ -91,67 +69,16 @@ func addLog(msg string) {
 // 流式替换 Reader：对响应体做实时字符串替换（兼容 SSE 流）
 type replacingReadCloser struct {
 	src      io.ReadCloser
-	buf      []byte // 未处理的残留字节
-	done     bool
 	replacer *strings.Replacer
 }
 
 func (r *replacingReadCloser) Read(p []byte) (int, error) {
-	for {
-		if r.done && len(r.buf) == 0 {
-			return 0, io.EOF
-		}
-
-		var tmp []byte
-		var n int
-		var err error
-
-		if !r.done {
-			tmp = make([]byte, len(p))
-			n, err = r.src.Read(tmp)
-			if err != nil && err != io.EOF {
-				return 0, err
-			}
-			if err == io.EOF {
-				r.done = true
-			}
-		}
-
-		combined := append(r.buf, tmp[:n]...)
-
-		var toProcess, toKeep []byte
-		if r.done {
-			toProcess = combined
-			toKeep = nil
-		} else {
-			keepLen := getKeepLength(combined)
-			if keepLen > 0 {
-				toProcess = combined[:len(combined)-keepLen]
-				toKeep = combined[len(combined)-keepLen:]
-			} else {
-				toProcess = combined
-				toKeep = nil
-			}
-		}
-
-		replaced := r.replacer.Replace(string(toProcess))
-		r.buf = toKeep
-
-		if len(replaced) > 0 {
-			copied := copy(p, replaced)
-			if copied < len(replaced) {
-				r.buf = append([]byte(replaced[copied:]), r.buf...)
-			}
-			if r.done && len(r.buf) == 0 {
-				return copied, io.EOF
-			}
-			return copied, nil
-		}
-
-		if r.done && len(r.buf) == 0 {
-			return 0, io.EOF
-		}
+	n, err := r.src.Read(p)
+	if n > 0 && r.replacer != nil {
+		replaced := r.replacer.Replace(string(p[:n]))
+		copy(p, replaced)
 	}
+	return n, err
 }
 
 func (r *replacingReadCloser) Close() error {
@@ -202,13 +129,14 @@ func init() {
 							}
 						}
 
-						if model == "deepseek-v4-flash" {
+						modelLower := strings.ToLower(model)
+						if modelLower == "hy3" {
+							reqData["model"] = "hy3-free"
+							modified = true
+						} else if strings.HasPrefix(modelLower, "deepseek") {
 							reqData["model"] = "deepseek-v4-flash-free"
 							modified = true
-						} else if model == "mimo-v2.5-pro" {
-							reqData["model"] = "mimo-v2.5-free"
-							modified = true
-						} else if model == "mimo-v2.5" {
+						} else if strings.HasPrefix(modelLower, "mimo") {
 							reqData["model"] = "mimo-v2.5-free"
 							modified = true
 						}
@@ -278,24 +206,14 @@ func init() {
 		resData := map[string]interface{}{
 			"object": "list",
 			"data": []map[string]interface{}{
-				{
-					"id":       "deepseek-v4-flash",
-					"object":   "model",
-					"created":  time.Now().Unix(),
-					"owned_by": "mimo",
-				},
-				{
-					"id":       "mimo-v2.5-pro",
-					"object":   "model",
-					"created":  time.Now().Unix(),
-					"owned_by": "mimo",
-				},
-				{
-					"id":       "mimo-v2.5",
-					"object":   "model",
-					"created":  time.Now().Unix(),
-					"owned_by": "mimo",
-				},
+				{"id": "hy3", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "deepseek-v4-flash", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "deepseek-chat", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "deepseek-reasoner", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "deepseek-v3", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "deepseek-r1", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "mimo-v2.5-pro", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
+				{"id": "mimo-v2.5", "object": "model", "created": time.Now().Unix(), "owned_by": "mimo"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
