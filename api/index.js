@@ -1,7 +1,7 @@
 export const config = {
   runtime: 'edge',
 };
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 const UPSTREAM = 'https://opencode.ai';
 const AUTH_KEY = 'sk-mimo';
