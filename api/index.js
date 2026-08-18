@@ -321,4 +321,4 @@ export default async function handler(request) {
       headers: { ...CORS, 'Content-Type': 'application/json' },
     });
   }
-}\n
+}

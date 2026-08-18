@@ -1,9 +1,4 @@
 {
-  "functions": {
-    "api/**/*": {
-      "maxDuration": 800
-    }
-  },
   "rewrites": [
     {
       "source": "/v1/(.*)",
@@ -14,4 +9,4 @@
       "destination": "/api/index"
     }
   ]
-}\n
+}
