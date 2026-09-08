@@ -24,6 +24,7 @@ const SUPPORTED_MODELS = [
   'deepseek-r1',
   'mimo-v2.5-pro',
   'mimo-v2.5',
+  'ling-3.0-flash',
 ];
 
 const MODELS_LIST = {
@@ -85,9 +86,13 @@ function applyClientFingerprint(headers) {
   headers.set('Origin', 'https://opencode.ai');
   headers.set('Referer', 'https://opencode.ai/');
 
-  const sessionID = generateUUID();
+  // 注入 OpenCode 官方 2026-09-06 起强制校验的 x-opencode-session 标头
+  const uuid = generateUUID().replace(/-/g, '');
+  const sessionID = `ses_${uuid.slice(0, 24)}`;
   const reqID = generateUUID();
+  headers.set('x-opencode-session', sessionID);
   headers.set('x-opencode-session-id', sessionID);
+  headers.set('x-session-id', sessionID);
   headers.set('x-request-id', reqID);
   headers.set('x-correlation-id', reqID);
 }
@@ -95,7 +100,10 @@ function applyClientFingerprint(headers) {
 // 快速靶向替换：按请求模型精准单次扫描，避免无谓正则开销
 function fastReplace(text, model) {
   if (model === 'hy3') {
-    return text.includes('hy3-free') ? text.replaceAll('hy3-free', 'hy3') : text;
+    let res = text;
+    if (res.includes('mimo-v2.5-free')) res = res.replaceAll('mimo-v2.5-free', 'hy3');
+    if (res.includes('hy3-free')) res = res.replaceAll('hy3-free', 'hy3');
+    return res;
   }
   if (model === 'mimo-v2.5-pro') {
     let res = text;
@@ -118,9 +126,9 @@ function fastReplace(text, model) {
     return res;
   }
   let res = text;
+  if (res.includes('mimo-v2.5-free')) res = res.replaceAll('mimo-v2.5-free', model || 'mimo-v2.5');
   if (res.includes('deepseek-v4-flash-free')) res = res.replaceAll('deepseek-v4-flash-free', 'deepseek-v4-flash');
   if (res.includes('hy3-free')) res = res.replaceAll('hy3-free', 'hy3');
-  if (res.includes('mimo-v2.5-free')) res = res.replaceAll('mimo-v2.5-free', 'mimo-v2.5');
   return res;
 }
 
@@ -200,10 +208,14 @@ export default async function handler(request) {
           }
 
           if (m === 'hy3') {
-            data.model = 'hy3-free';
+            data.model = 'mimo-v2.5-free';
+          } else if (m.startsWith('ling')) {
+            data.model = 'ling-3.0-flash-fin-free';
           } else if (m.startsWith('deepseek')) {
-            data.model = 'deepseek-v4-flash-free';
+            data.model = 'mimo-v2.5-free';
           } else if (m.startsWith('mimo')) {
+            data.model = 'mimo-v2.5-free';
+          } else {
             data.model = 'mimo-v2.5-free';
           }
         }
@@ -274,7 +286,6 @@ export default async function handler(request) {
             const rawStr = decoder.decode(chunk, { stream: true });
             const replaced = fastReplace(rawStr, requestedModel);
             if (replaced === rawStr) {
-              // 零编码开销：无替换时直接透传原始二进制 chunk
               controller.enqueue(chunk);
             } else {
               controller.enqueue(encoder.encode(replaced));
