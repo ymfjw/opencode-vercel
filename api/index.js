@@ -53,14 +53,44 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, x-api-key',
 };
 
-function generateUUID() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
+function randomBase62(length) {
+  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let result = "";
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
+    for (let i = 0; i < length; i++) {
+      result += chars[bytes[i] % 62];
+    }
+  } else {
+    for (let i = 0; i < length; i++) {
+      result += chars[Math.floor(Math.random() * 62)];
+    }
   }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-  });
+  return result;
+}
+
+let lastTimestamp = 0;
+let idCounter = 0;
+
+function generateOpenCodeID(prefix = "ses") {
+  const currentTimestamp = Date.now();
+  if (currentTimestamp !== lastTimestamp) {
+    lastTimestamp = currentTimestamp;
+    idCounter = 0;
+  }
+  idCounter++;
+
+  let now = BigInt(currentTimestamp) * BigInt(0x1000) + BigInt(idCounter);
+  now = ~now;
+
+  let hexStr = "";
+  for (let i = 0; i < 6; i++) {
+    const b = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff));
+    hexStr += b.toString(16).padStart(2, "0");
+  }
+
+  return `${prefix}_${hexStr}${randomBase62(14)}`;
 }
 
 function getHeader(req, name) {
@@ -86,15 +116,11 @@ function applyClientFingerprint(headers) {
   headers.set('Origin', 'https://opencode.ai');
   headers.set('Referer', 'https://opencode.ai/');
 
-  // 注入 OpenCode 官方 2026-09-06 起强制校验的 x-opencode-session 标头
-  const uuid = generateUUID().replace(/-/g, '');
-  const sessionID = `ses_${uuid.slice(0, 24)}`;
-  const reqID = generateUUID();
+  // 注入 OpenCode 官方单调递减时间戳 Session ID 与 Request ID
+  const sessionID = generateOpenCodeID('ses');
+  const reqID = generateOpenCodeID('req');
   headers.set('x-opencode-session', sessionID);
-  headers.set('x-opencode-session-id', sessionID);
-  headers.set('x-session-id', sessionID);
   headers.set('x-request-id', reqID);
-  headers.set('x-correlation-id', reqID);
 }
 
 // 快速靶向替换：按请求模型精准单次扫描，避免无谓正则开销
@@ -127,6 +153,7 @@ function fastReplace(text, model) {
   }
   let res = text;
   if (res.includes('mimo-v2.5-free')) res = res.replaceAll('mimo-v2.5-free', model || 'mimo-v2.5');
+  if (res.includes('ling-3.0-flash-fin-free')) res = res.replaceAll('ling-3.0-flash-fin-free', model || 'ling-3.0-flash');
   if (res.includes('deepseek-v4-flash-free')) res = res.replaceAll('deepseek-v4-flash-free', 'deepseek-v4-flash');
   if (res.includes('hy3-free')) res = res.replaceAll('hy3-free', 'hy3');
   return res;
@@ -207,15 +234,10 @@ export default async function handler(request) {
             }
           }
 
-          if (m === 'hy3') {
-            data.model = 'mimo-v2.5-free';
-          } else if (m.startsWith('ling')) {
+          if (m.startsWith('ling')) {
             data.model = 'ling-3.0-flash-fin-free';
-          } else if (m.startsWith('deepseek')) {
-            data.model = 'mimo-v2.5-free';
-          } else if (m.startsWith('mimo')) {
-            data.model = 'mimo-v2.5-free';
           } else {
+            // 默认统一智能路由到当前最稳定高速的 mimo-v2.5-free
             data.model = 'mimo-v2.5-free';
           }
         }
