@@ -72,7 +72,7 @@ function getHeader(req, name) {
 }
 
 function applyClientFingerprint(headers) {
-  headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Opencode/1.0.8');
+  headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Opencode/1.18.31');
   headers.set('sec-ch-ua', '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"');
   headers.set('sec-ch-ua-mobile', '?0');
   headers.set('sec-ch-ua-platform', '"Windows"');
@@ -82,7 +82,7 @@ function applyClientFingerprint(headers) {
   headers.set('Accept', 'application/json, text/event-stream, */*');
   headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7');
   headers.set('x-opencode-client', 'desktop');
-  headers.set('x-opencode-version', '1.0.8');
+  headers.set('x-opencode-version', '1.18.31');
   headers.set('Origin', 'https://opencode.ai');
   headers.set('Referer', 'https://opencode.ai/');
 
