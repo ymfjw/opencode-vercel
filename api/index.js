@@ -25,6 +25,8 @@ const SUPPORTED_MODELS = [
   'mimo-v2.5-pro',
   'mimo-v2.5',
   'ling-3.0-flash',
+  'nemotron-3-ultra',
+  'nemotron-3.5-lightning',
 ];
 
 const MODELS_LIST = {
@@ -53,18 +55,19 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, x-api-key',
 };
 
+const BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
 function randomBase62(length) {
-  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   let result = "";
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
     const bytes = new Uint8Array(length);
     crypto.getRandomValues(bytes);
     for (let i = 0; i < length; i++) {
-      result += chars[bytes[i] % 62];
+      result += BASE62_CHARS[bytes[i] % 62];
     }
   } else {
     for (let i = 0; i < length; i++) {
-      result += chars[Math.floor(Math.random() * 62)];
+      result += BASE62_CHARS[Math.floor(Math.random() * 62)];
     }
   }
   return result;
@@ -73,7 +76,7 @@ function randomBase62(length) {
 let lastTimestamp = 0;
 let idCounter = 0;
 
-function generateOpenCodeID(prefix = "ses") {
+function generateSessionId() {
   const currentTimestamp = Date.now();
   if (currentTimestamp !== lastTimestamp) {
     lastTimestamp = currentTimestamp;
@@ -90,7 +93,72 @@ function generateOpenCodeID(prefix = "ses") {
     hexStr += b.toString(16).padStart(2, "0");
   }
 
-  return `${prefix}_${hexStr}${randomBase62(14)}`;
+  return `ses_${hexStr}${randomBase62(14)}`;
+}
+
+function generateRequestId() {
+  const currentTimestamp = Date.now();
+  let now = BigInt(currentTimestamp) * BigInt(0x1000) + 1n;
+  let hexStr = "";
+  for (let i = 0; i < 6; i++) {
+    const b = Number((now >> BigInt(40 - 8 * i)) & BigInt(0xff));
+    hexStr += b.toString(16).padStart(2, "0");
+  }
+  return `msg_${hexStr}${randomBase62(14)}`;
+}
+
+const FINGERPRINT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "bash",
+      description: "OpenCode built-in bash tool",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "glob",
+      description: "OpenCode built-in glob tool",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "grep",
+      description: "OpenCode built-in grep tool",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "read",
+      description: "OpenCode built-in read tool",
+      parameters: { type: "object", properties: {} }
+    }
+  }
+];
+
+function ensureTools(bodyObj) {
+  if (!bodyObj) return;
+  const present = new Set();
+  if (Array.isArray(bodyObj.tools)) {
+    for (const t of bodyObj.tools) {
+      const name = t?.name || t?.function?.name;
+      if (name) present.add(name);
+    }
+  } else {
+    bodyObj.tools = [];
+  }
+  for (const item of FINGERPRINT_TOOLS) {
+    if (!present.has(item.function.name)) {
+      bodyObj.tools.push(item);
+      present.add(item.function.name);
+    }
+  }
 }
 
 function getHeader(req, name) {
@@ -102,25 +170,12 @@ function getHeader(req, name) {
 }
 
 function applyClientFingerprint(headers) {
-  headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Opencode/1.18.31');
-  headers.set('sec-ch-ua', '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"');
-  headers.set('sec-ch-ua-mobile', '?0');
-  headers.set('sec-ch-ua-platform', '"Windows"');
-  headers.set('sec-fetch-dest', 'empty');
-  headers.set('sec-fetch-mode', 'cors');
-  headers.set('sec-fetch-site', 'cross-site');
-  headers.set('Accept', 'application/json, text/event-stream, */*');
-  headers.set('Accept-Language', 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7');
+  headers.set('User-Agent', 'opencode/1.18.31');
   headers.set('x-opencode-client', 'desktop');
-  headers.set('x-opencode-version', '1.18.31');
-  headers.set('Origin', 'https://opencode.ai');
-  headers.set('Referer', 'https://opencode.ai/');
-
-  // 注入 OpenCode 官方单调递减时间戳 Session ID 与 Request ID
-  const sessionID = generateOpenCodeID('ses');
-  const reqID = generateOpenCodeID('req');
-  headers.set('x-opencode-session', sessionID);
-  headers.set('x-request-id', reqID);
+  headers.set('x-opencode-project', 'global');
+  headers.set('x-opencode-session', generateSessionId());
+  headers.set('x-opencode-request', generateRequestId());
+  headers.set('Accept', 'text/event-stream');
 }
 
 // 快速靶向替换：按请求模型精准单次扫描，避免无谓正则开销
@@ -212,13 +267,16 @@ export default async function handler(request) {
     }
 
     let body = request.body;
-    let requestedModel = 'unknown';
+    let requestedModel = 'mimo-v2.5';
+    let clientWantsStream = false;
     let contentLength = getHeader(request, 'Content-Length');
 
     if (request.method === 'POST' && body) {
       try {
         const text = await request.text();
         const data = JSON.parse(text);
+        clientWantsStream = Boolean(data.stream);
+
         if (data.model) {
           requestedModel = data.model;
           const m = data.model.toLowerCase();
@@ -236,11 +294,18 @@ export default async function handler(request) {
 
           if (m.startsWith('ling')) {
             data.model = 'ling-3.0-flash-fin-free';
+          } else if (m.includes('nemotron-3.5') || m.includes('lightning')) {
+            data.model = 'nemotron-3.5-lightning-free';
+          } else if (m.includes('nemotron')) {
+            data.model = 'nemotron-3-ultra-free';
           } else {
-            // 默认统一智能路由到当前最稳定高速的 mimo-v2.5-free
             data.model = 'mimo-v2.5-free';
           }
         }
+
+        // 注入工具集四件套并强制开启上游流式
+        ensureTools(data);
+        data.stream = true;
 
         const newBody = JSON.stringify(data);
         body = newBody;
@@ -288,15 +353,22 @@ export default async function handler(request) {
       init.body = body;
     }
 
-    // 发起上游请求：开启毫秒级极速流式透传
     const resp = await fetch(upstreamUrl, init);
     const respHeaders = new Headers(resp.headers);
     Object.entries(CORS).forEach(([k, v]) => respHeaders.set(k, v));
 
-    const contentType = resp.headers.get('Content-Type') || '';
+    // 如果上游返回错误状态码，直接透传返回
+    if (!resp.ok) {
+      const errText = await resp.text();
+      return new Response(errText, {
+        status: resp.status,
+        headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
 
-    // 流式响应 (SSE)：极速直通，零延迟发送每个 chunk（零缓冲）
-    if (contentType.includes('text/event-stream')) {
+    // 客户端需要流式响应 (SSE)：零延迟直通
+    if (clientWantsStream) {
+      respHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
       respHeaders.delete('Content-Length');
       let responseBody = resp.body;
       if (responseBody) {
@@ -330,12 +402,76 @@ export default async function handler(request) {
       });
     }
 
-    // 非流式响应快速替换
-    let rawText = await resp.text();
-    rawText = fastReplace(rawText, requestedModel);
-    const newBytes = new TextEncoder().encode(rawText);
-    respHeaders.set('Content-Length', newBytes.length.toString());
-    return new Response(newBytes, { status: resp.status, headers: respHeaders });
+    // 客户端需要非流式 JSON 响应：聚合上游 SSE 数据块
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = '';
+    let reasoningContent = '';
+    let respId = '';
+    let respModel = requestedModel;
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          const dataStr = trimmed.slice(6).trim();
+          if (dataStr === '[DONE]') continue;
+          try {
+            const json = JSON.parse(dataStr);
+            if (!respId && json.id) respId = json.id;
+            if (json.model) respModel = json.model;
+            const choices = json.choices || [];
+            if (choices.length > 0) {
+              const delta = choices[0].delta || {};
+              if (delta.content) fullContent += delta.content;
+              if (delta.reasoning_content) reasoningContent += delta.reasoning_content;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const finalJson = {
+      id: respId || `chatcmpl-${Date.now()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: requestedModel,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: fastReplace(fullContent, requestedModel),
+          },
+          finish_reason: 'stop',
+        }
+      ],
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: fullContent.length,
+        total_tokens: 20 + fullContent.length,
+      }
+    };
+
+    if (reasoningContent) {
+      finalJson.choices[0].message.reasoning_content = fastReplace(reasoningContent, requestedModel);
+    }
+
+    const responseBytes = new TextEncoder().encode(JSON.stringify(finalJson));
+    respHeaders.set('Content-Type', 'application/json; charset=utf-8');
+    respHeaders.set('Content-Length', responseBytes.length.toString());
+
+    return new Response(responseBytes, {
+      status: 200,
+      headers: respHeaders,
+    });
   } catch (err) {
     return new Response(JSON.stringify({
       error: {
