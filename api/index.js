@@ -300,7 +300,7 @@ export default async function handler(request) {
     if (request.method === 'POST' && body) {
       try {
         const text = await request.text();
-        const data = JSON.parse(text);
+        let data = JSON.parse(text);
         clientWantsStream = Boolean(data.stream);
 
         if (data.model) {
