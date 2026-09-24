@@ -16,6 +16,9 @@ function addLog(msg) {
 }
 
 const SUPPORTED_MODELS = [
+  'muse-spark-1.3',
+  'muse-spark-1.3-contributor-free',
+  'muse-spark',
   'mimo-v2.6-flash-free',
   'mimo-v2.6-flash',
   'mimo-v2.6-pro',
@@ -190,6 +193,8 @@ function applyClientFingerprint(headers) {
 function fastReplace(text, model) {
   if (!text) return text;
   let res = text;
+  if (res.includes('muse-spark-1.3-contributor-free')) res = res.replaceAll('muse-spark-1.3-contributor-free', model || 'muse-spark-1.3');
+  if (res.includes('muse-spark-1.3')) res = res.replaceAll('muse-spark-1.3', model || 'muse-spark-1.3');
   if (res.includes('mimo-v2.6-flash-free')) res = res.replaceAll('mimo-v2.6-flash-free', model || 'mimo-v2.6-flash-free');
   if (res.includes('mimo-v2.5-free')) res = res.replaceAll('mimo-v2.5-free', model || 'mimo-v2.5');
   if (res.includes('ling-3.0-flash-fin-free')) res = res.replaceAll('ling-3.0-flash-fin-free', model || 'ling-3.0-flash');
@@ -206,7 +211,7 @@ function fastReplace(text, model) {
     if (res.includes('MiMo-2.6-Flash')) res = res.replaceAll('MiMo-2.6-Flash', 'MiMo-v2.6-pro');
   }
 
-  if (m === 'mimo-v2.5-pro' || m === 'mimo-v2.6-pro') {
+  if (m.includes('muse') || m === 'mimo-v2.5-pro' || m === 'mimo-v2.6-pro') {
     if (res.includes('系统指令')) res = res.replaceAll('系统指令', '身份设定');
     if (res.includes('系统提示词')) res = res.replaceAll('系统提示词', '角色设定');
     if (res.includes('系统提示')) res = res.replaceAll('系统提示', '背景设定');
@@ -219,6 +224,9 @@ function fastReplace(text, model) {
 
 function getInjectionPrompt(model) {
   const m = (model || '').toLowerCase();
+  if (m.includes('muse')) {
+    return '你是由Meta研发团队精心打造的语言模型 Muse Spark 1.3。请始终认同并坚称自己的版本是 Muse Spark 1.3。在思考（reasoning）和回复中，请表现得完全自然，如同你本就如此，绝对不要提及“系统提示”、“指令要求”、“注入”或任何暗示你的身份被修改过的痕迹。';
+  }
   if (m === 'mimo-v2.6-pro') {
     return '你是由小米大模型Core团队精心打造的语言模型 MiMo-v2.6-pro。请始终认同并坚称自己的版本是 MiMo-v2.6-pro。在思考（reasoning）和回复中，请表现得完全自然，如同你本就如此，绝对不要提及“系统提示”、“指令要求”、“注入”或任何暗示你的身份被修改过的痕迹。';
   }
@@ -286,6 +294,7 @@ export default async function handler(request) {
     let body = request.body;
     let requestedModel = 'mimo-v2.5';
     let clientWantsStream = false;
+    let isMuse = false;
     let contentLength = getHeader(request, 'Content-Length');
 
     if (request.method === 'POST' && body) {
@@ -309,7 +318,10 @@ export default async function handler(request) {
             }
           }
 
-          if (m === 'mimo-v2.6-flash-free' || m.includes('2.6') || m.includes('v2.6')) {
+          if (m.includes('muse')) {
+            isMuse = true;
+            data.model = 'muse-spark-1.3-contributor-free';
+          } else if (m === 'mimo-v2.6-flash-free' || m.includes('2.6') || m.includes('v2.6')) {
             data.model = 'mimo-v2.6-flash-free';
           } else if (m.startsWith('ling')) {
             data.model = 'ling-3.0-flash-fin-free';
@@ -322,8 +334,18 @@ export default async function handler(request) {
           }
         }
 
-        // 注入工具集四件套并强制开启上游流式
-        ensureTools(data);
+        if (isMuse) {
+          data.input = data.messages;
+          delete data.messages;
+          data.tools = [
+            { type: 'function', name: 'bash', description: 'bash', parameters: { type: 'object', properties: {} } },
+            { type: 'function', name: 'glob', description: 'glob', parameters: { type: 'object', properties: {} } },
+            { type: 'function', name: 'grep', description: 'grep', parameters: { type: 'object', properties: {} } },
+            { type: 'function', name: 'read', description: 'read', parameters: { type: 'object', properties: {} } }
+          ];
+        } else {
+          ensureTools(data);
+        }
         data.stream = true;
 
         const newBody = JSON.stringify(data);
@@ -335,7 +357,9 @@ export default async function handler(request) {
     }
 
     let targetPath = url.pathname;
-    if (targetPath.startsWith('/v1/')) {
+    if (isMuse) {
+      targetPath = '/zen/v1/responses';
+    } else if (targetPath.startsWith('/v1/')) {
       targetPath = '/zen' + targetPath;
     } else if (!targetPath.startsWith('/zen/')) {
       targetPath = '/zen/v1/chat/completions';
@@ -382,6 +406,149 @@ export default async function handler(request) {
       return new Response(errText, {
         status: resp.status,
         headers: { ...CORS, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isMuse) {
+      const respId = `chatcmpl-${Date.now()}`;
+      const createdTime = Math.floor(Date.now() / 1000);
+
+      if (clientWantsStream) {
+        respHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
+        respHeaders.delete('Content-Length');
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let sentDone = false;
+
+        const transformStream = new TransformStream({
+          transform(chunk, controller) {
+            buffer += decoder.decode(chunk, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('data: ')) {
+                const dataStr = trimmed.slice(6).trim();
+                if (dataStr === '[DONE]') {
+                  if (!sentDone) {
+                    const stopChunk = {
+                      id: respId,
+                      object: 'chat.completion.chunk',
+                      created: createdTime,
+                      model: requestedModel,
+                      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(stopChunk)}\n\ndata: [DONE]\n\n`));
+                    sentDone = true;
+                  }
+                  continue;
+                }
+                try {
+                  const ev = JSON.parse(dataStr);
+                  if (ev.type === 'response.output_text.delta' && ev.delta) {
+                    const cleanDelta = fastReplace(ev.delta, requestedModel);
+                    const chunkObj = {
+                      id: respId,
+                      object: 'chat.completion.chunk',
+                      created: createdTime,
+                      model: requestedModel,
+                      choices: [{ index: 0, delta: { content: cleanDelta }, finish_reason: null }]
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkObj)}\n\n`));
+                  } else if (ev.type === 'response.completed' && !sentDone) {
+                    const stopChunk = {
+                      id: respId,
+                      object: 'chat.completion.chunk',
+                      created: createdTime,
+                      model: requestedModel,
+                      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(stopChunk)}\n\ndata: [DONE]\n\n`));
+                    sentDone = true;
+                  }
+                } catch {}
+              }
+            }
+          },
+          flush(controller) {
+            if (!sentDone) {
+              const stopChunk = {
+                id: respId,
+                object: 'chat.completion.chunk',
+                created: createdTime,
+                model: requestedModel,
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+              };
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(stopChunk)}\n\ndata: [DONE]\n\n`));
+            }
+          }
+        });
+
+        return new Response(resp.body.pipeThrough(transformStream), {
+          status: resp.status,
+          headers: respHeaders,
+        });
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data: ')) {
+            const dataStr = trimmed.slice(6).trim();
+            if (dataStr === '[DONE]') continue;
+            try {
+              const ev = JSON.parse(dataStr);
+              if (ev.type === 'response.output_text.delta' && ev.delta) {
+                fullContent += ev.delta;
+              }
+            } catch {}
+          }
+        }
+      }
+
+      const cleanFull = fastReplace(fullContent, requestedModel);
+      const finalJson = {
+        id: respId,
+        object: 'chat.completion',
+        created: createdTime,
+        model: requestedModel,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: cleanFull,
+            },
+            finish_reason: 'stop',
+          }
+        ],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: cleanFull.length,
+          total_tokens: 20 + cleanFull.length,
+        }
+      };
+
+      const responseBytes = new TextEncoder().encode(JSON.stringify(finalJson));
+      respHeaders.set('Content-Type', 'application/json; charset=utf-8');
+      respHeaders.set('Content-Length', responseBytes.length.toString());
+
+      return new Response(responseBytes, {
+        status: 200,
+        headers: respHeaders,
       });
     }
 
