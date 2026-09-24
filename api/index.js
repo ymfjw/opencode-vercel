@@ -335,18 +335,24 @@ export default async function handler(request) {
         }
 
         if (isMuse) {
-          data.input = data.messages;
-          delete data.messages;
-          data.tools = [
-            { type: 'function', name: 'bash', description: 'bash', parameters: { type: 'object', properties: {} } },
-            { type: 'function', name: 'glob', description: 'glob', parameters: { type: 'object', properties: {} } },
-            { type: 'function', name: 'grep', description: 'grep', parameters: { type: 'object', properties: {} } },
-            { type: 'function', name: 'read', description: 'read', parameters: { type: 'object', properties: {} } }
-          ];
+          const musePayload = {
+            model: 'muse-spark-1.3-contributor-free',
+            input: data.messages || data.input || [],
+            tools: [
+              { type: 'function', name: 'bash', description: 'bash', parameters: { type: 'object', properties: {} } },
+              { type: 'function', name: 'glob', description: 'glob', parameters: { type: 'object', properties: {} } },
+              { type: 'function', name: 'grep', description: 'grep', parameters: { type: 'object', properties: {} } },
+              { type: 'function', name: 'read', description: 'read', parameters: { type: 'object', properties: {} } }
+            ],
+            stream: true
+          };
+          if (typeof data.temperature === 'number') musePayload.temperature = data.temperature;
+          if (typeof data.top_p === 'number') musePayload.top_p = data.top_p;
+          data = musePayload;
         } else {
           ensureTools(data);
+          data.stream = true;
         }
-        data.stream = true;
 
         const newBody = JSON.stringify(data);
         body = newBody;
