@@ -321,7 +321,7 @@ export default async function handler(request) {
           if (m.includes('muse')) {
             isMuse = true;
             data.model = 'muse-spark-1.3-contributor-free';
-          } else if (m === 'mimo-v2.6-flash-free' || m.includes('2.6') || m.includes('v2.6')) {
+          } else if (m.includes('mimo') || m.includes('2.6') || m.includes('2.5')) {
             data.model = 'mimo-v2.6-flash-free';
           } else if (m.startsWith('ling')) {
             data.model = 'ling-3.0-flash-fin-free';
@@ -330,7 +330,7 @@ export default async function handler(request) {
           } else if (m.includes('nemotron')) {
             data.model = 'nemotron-3-ultra-free';
           } else {
-            data.model = 'mimo-v2.5-free';
+            data.model = 'mimo-v2.6-flash-free';
           }
         }
 
