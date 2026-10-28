@@ -8,6 +8,10 @@
     {
       "source": "/log",
       "destination": "/api/index"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index"
     }
   ]
 }
